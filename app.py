@@ -5,36 +5,53 @@ from ollama import Client
 app = Flask(__name__)
 
 # Initialize Client
-# Ensure OLLAMA_HOST and OLLAMA_API_KEY are set in Render Environment Variables
 client = Client(
     host=os.environ.get('OLLAMA_HOST', 'https://ollama.com'),
     headers={'Authorization': 'Bearer ' + os.environ.get('OLLAMA_API_KEY', '')}
 )
 
+# Global dictionary to store history
+# Format: { 'user_id': [ {'role': 'user', ...}, {'role': 'assistant', ...} ] }
+chat_store = {}
+
 @app.route('/content', methods=['GET'])
 def generate_content():
-    # Get the prompt from the URL parameter (e.g., ?content=hello)
     user_prompt = request.args.get('content')
+    # Get a session ID (defaults to 'default' if not provided)
+    user_id = request.args.get('id', 'default')
 
     if not user_prompt:
         return "Error: No content parameter provided.", 400
 
-    messages = [
-        {'role': 'user', 'content': user_prompt},
-    ]
+    # Initialize history for this user if it doesn't exist
+    if user_id not in chat_store:
+        chat_store[user_id] = []
 
-    # function to yield chunks of data for streaming
+    # Add the new user message to history
+    chat_store[user_id].append({'role': 'user', 'content': user_prompt})
+
     def generate():
+        full_response = ""
         try:
-            stream = client.chat(model='gpt-oss:120b', messages=messages, stream=True)
+            # Send the FULL history to Ollama
+            stream = client.chat(
+                model='gpt-oss:120b', 
+                messages=chat_store[user_id], 
+                stream=True
+            )
+            
             for part in stream:
-                yield part['message']['content']
+                chunk = part['message']['content']
+                full_response += chunk # Accumulate the text
+                yield chunk
+            
+            # Once stream finishes, save the assistant's reply to history
+            chat_store[user_id].append({'role': 'assistant', 'content': full_response})
+            
         except Exception as e:
             yield f"Error generating response: {str(e)}"
 
-    # Return a streaming response
     return Response(stream_with_context(generate()), mimetype='text/plain')
 
 if __name__ == '__main__':
-    # This is for running locally
     app.run(debug=True)
